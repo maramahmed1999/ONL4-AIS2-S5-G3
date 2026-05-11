@@ -220,9 +220,12 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Project-specific ignores
-# Model files and notebook in models folder
+# Keep directory entries via .gitkeep, ignore everything else
+src/cv_service/models/*
+!src/cv_service/models/.gitkeep
 src/cv_service/models/*.ipynb
 
+# Dataset videos (large files)
 src/dataset/*.mp4
 
 # Model binaries
@@ -232,11 +235,13 @@ src/dataset/*.mp4
 *.h5
 *.weights
 
-# Evaluation outputs
+# Evaluation outputs (ignore contents but keep folder)
 evaluations/*
+!evaluations/.gitkeep
 
-# Runtime artifacts and logs
-runtime/*.jpg
+# Runtime artifacts and logs (ignore contents but keep folder)
+runtime/*
+!runtime/.gitkeep
 *.log
 
 # IDE/editor
@@ -246,3 +251,5 @@ runtime/*.jpg
 # OS
 .DS_Store
 Thumbs.db
+
+
