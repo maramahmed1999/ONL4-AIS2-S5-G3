@@ -1,88 +1,136 @@
-# 🚧 Equipment Monitoring System
+# Excavator Activity Monitor
 
----
+Kafka-based excavator activity monitoring from video using YOLOv8 + ByteTrack,
+Farneback optical flow, and a debounced state machine.
 
-## Project Description
+This project has one supported runtime architecture:
 
-This project presents a real-time equipment utilization monitoring system designed for construction sites. It automatically determines whether excavators are **ACTIVE** or **INACTIVE** by processing live video streams using a computer vision pipeline.
+```text
+cv_service/main.py
+  -> reads video frames
+  -> detects/tracks excavators with YOLOv8 + ByteTrack
+  -> classifies each track as IDLE / WORKING / MOVING
+  -> publishes JSON events to Kafka
+  -> writes latest annotated preview frame to runtime/latest_frame.jpg
 
-The system combines object detection with optical flow-based motion analysis to accurately track machine behavior—even under partial occlusion. A region-based motion analysis module ensures correct interpretation of articulated machines (e.g., excavators where the arm moves independently from the tracks).
+dashboard/app.py
+  -> consumes Kafka events
+  -> displays the latest preview frame
+  -> displays live metrics, tables, charts, and state changes
+```
 
-Results are streamed to an interactive Streamlit dashboard that displays an annotated live video feed, per-machine status cards, and real-time utilization counters.
+## Setup
 
----
+```bash
+python -m venv .venv
+source .venv/bin/activate       # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
 
-##  Objectives
+Expected local assets:
 
-### Improve Operational Efficiency
+```text
+cv_service/models/best.pt
+dataset/excavator_03.mp4
+```
 
-Automate equipment monitoring and eliminate manual observation across large construction sites.
+Optional config:
 
-### Accurate Activity Classification
+```bash
+cp .env.example .env
+```
 
-Classify machine activities into meaningful states:
+## Run
 
-* **DIGGING**
-* **SWINGING / LOADING**
-* **DUMPING**
-* **WAITING**
+Start Kafka:
 
-This is achieved using a rule-based state machine driven by motion vectors.
+```bash
+docker compose up -d
+```
 
-### Real-Time Analytics Dashboard
+Terminal 1: start the CV producer:
 
-Provide live insights through:
+```bash
+python cv_service/main.py
+```
 
-* Annotated video stream
-* Individual machine status cards
-* Real-time utilization metrics
+Or pass a custom video:
 
-###  Data-Driven Cost Optimization
+```bash
+python cv_service/main.py dataset/custom.mp4
+```
 
-Enable smarter decision-making by:
+Terminal 2: start the dashboard:
 
-* Measuring actual working time
-* Identifying high-performing equipment
-* Supporting performance-based billing
+```bash
+streamlit run dashboard/app.py
+```
 
----
+Open:
 
-## ⚙️ System Pipeline
+```text
+http://localhost:8501
+```
 
-1. **Video Input** (Live or recorded)
-2. **Object Detection Model** (Detect excavators)
-3. **Region Extraction** (Focus on machine parts)
-4. **Optical Flow Analysis** (Compute motion vectors)
-5. **State Machine** (Classify activity)
-6. **Dashboard Visualization** (Streamlit interface)
+Kafka UI:
 
----
+```text
+http://localhost:9000
+```
 
-##  Features
+## State Logic
 
-* Real-time video processing
-* Robust detection under occlusion
-* Motion-aware activity classification
-* Multi-machine tracking
-* Interactive dashboard visualization
+- `WORKING`: arm/bucket optical-flow motion exceeds the configured threshold.
+- `MOVING`: bounding-box centroid displacement exceeds the movement threshold.
+- `IDLE`: neither working nor moving is confirmed.
 
----
+Transitions require `FRAMES_TO_CONFIRM` consecutive frames to reduce flicker.
+Duration accounting uses source-video time, so metrics do not depend on how
+fast the machine processes the video.
 
-##  Future Improvements
+## Tuning
 
-* Integrate deep learning-based action recognition (e.g., 3D CNNs, Transformers)
-* Extend support to additional equipment types (cranes, trucks, loaders)
-* Add historical analytics and reporting
-* Deploy on edge devices for real-time on-site processing
+| Setting | Effect |
+|---|---|
+| `TARGET_FPS` | Number of frames per second to run detection and optical flow on. Lower is faster. |
+| `PREVIEW_ENABLED` | Write latest annotated frame for the dashboard. |
+| `PREVIEW_FRAME_PATH` | Preview image path read by the dashboard. |
+| `PREVIEW_JPEG_QUALITY` | JPEG quality for the preview image. |
+| `PREVIEW_EVERY_N_PROCESSED_FRAMES` | Write preview every N processed frames. Higher is faster. |
+| `DETECTION_IMGSZ` | YOLO inference image size. Lower is faster. |
+| `DETECTION_EVERY_N_PROCESSED_FRAMES` | Run YOLO every N processed frames and reuse the last tracks between runs. |
+| `YOLO_DEVICE` | Set to `0` to use the first CUDA GPU, or leave unset for default behavior. |
+| `CONF_THRESHOLD` | YOLO confidence cutoff. |
+| `IOU_THRESHOLD` | YOLO/ByteTrack IoU threshold. |
+| `ARM_REGION_RATIO` | Top fraction of bbox used as arm/bucket region. |
+| `OPTICAL_FLOW_MAX_WIDTH` | Internal resize width for optical flow. Lower is faster. |
+| `MOTION_MAGNITUDE_THRESHOLD` | Motion threshold for `WORKING`. |
+| `MOVE_THRESHOLD_PIXELS` | Centroid shift threshold for `MOVING`. |
+| `FRAMES_TO_CONFIRM` | Debounce window for state changes. |
 
----
+If the dashboard stays mostly `IDLE`, lower `MOTION_MAGNITUDE_THRESHOLD`.
+Watch the CV service logs for `motion avg`, `max`, and `threshold`; a good
+threshold is usually between idle motion and active arm/bucket motion.
 
-## 📊 Use Cases
+## Kafka Event Schema
 
-* Construction site monitoring
-* Equipment performance analysis
-* Cost optimization and billing systems
-* Smart infrastructure solutions
+```json
+{
+  "track_id": 1,
+  "timestamp": "2026-05-08T10:23:01.123456+00:00",
+  "frame_id": 450,
+  "video_time_seconds": 18.0,
+  "state": "WORKING",
+  "motion_score": 2.314,
+  "bbox": [120, 80, 340, 310],
+  "working_seconds": 23.5,
+  "moving_seconds": 4.1,
+  "idle_seconds": 8.9
+}
+```
 
----
+## Tests
 
+```bash
+python -m unittest discover -s tests
+```

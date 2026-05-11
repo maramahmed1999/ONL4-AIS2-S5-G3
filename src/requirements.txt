@@ -1,0 +1,16 @@
+# ── Core CV ───────────────────────────────────────────────────────────────────
+ultralytics>=8.2.0,<9.0.0          # YOLOv8 + ByteTrack built-in
+opencv-python-headless>=4.9.0      # headless: no GUI deps (server-safe)
+numpy>=1.26.0,<2.0.0
+lap>=0.5.12                        # required by Ultralytics ByteTrack
+
+# ── Kafka ─────────────────────────────────────────────────────────────────────
+confluent-kafka>=2.3.0
+
+# ── Config ────────────────────────────────────────────────────────────────────
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+
+# ── Dashboard ─────────────────────────────────────────────────────────────────
+streamlit>=1.35.0
+pandas>=2.2.0

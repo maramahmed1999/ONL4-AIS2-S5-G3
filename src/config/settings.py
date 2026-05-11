@@ -1,0 +1,52 @@
+from pathlib import Path
+
+from pydantic_settings import BaseSettings
+
+
+SRC_ROOT = Path(__file__).resolve().parents[1]
+
+
+class Settings(BaseSettings):
+    # Video
+    default_video_path: str = "dataset/excavator_03.mp4"
+    target_fps: float = 5.0
+    preview_enabled: bool = True
+    preview_frame_path: str = "runtime/latest_frame.jpg"
+    preview_jpeg_quality: int = 80
+    preview_every_n_processed_frames: int = 5
+
+    # Detection
+    model_path: str = "cv_service/models/best.pt"
+    detection_imgsz: int = 640
+    detection_every_n_processed_frames: int = 1
+    yolo_device: str | None = "cpu"
+    conf_threshold: float = 0.4
+    iou_threshold: float = 0.5
+
+    # Optical flow
+    arm_region_ratio: float = 0.65
+    optical_flow_max_width: int = 640
+    motion_magnitude_threshold: float = 0.35
+
+    # State machine
+    move_threshold_pixels: float = 0.3
+    frames_to_confirm: int = 3
+    stale_track_timeout: float = 10.0
+
+    # Kafka
+    kafka_bootstrap_servers: str = "localhost:9092"
+    kafka_topic: str = "excavator_events"
+    kafka_consumer_group_id: str = "dashboard-consumer-group"
+
+    model_config = {
+        "env_file": str(SRC_ROOT / ".env"),
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
+
+    def resolve_path(self, path_value: str | Path) -> Path:
+        path = Path(path_value)
+        return path if path.is_absolute() else SRC_ROOT / path
+
+
+settings = Settings()
