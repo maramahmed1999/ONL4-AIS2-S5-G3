@@ -35,7 +35,6 @@ logger = logging.getLogger(__name__)
 
 STATE_COLOR_BGR: dict[str, tuple[int, int, int]] = {
     "WORKING": (50, 205, 50),
-    "MOVING": (0, 165, 255),
     "IDLE": (60, 60, 200),
 }
 
@@ -185,7 +184,6 @@ def build_event(track_id, state, record, motion_score, bbox, frame_id, video_tim
         "motion_score": motion_score,
         "bbox": list(bbox),
         "working_seconds": round(record.working_seconds, 2),
-        "moving_seconds": round(record.moving_seconds, 2),
         "idle_seconds": round(record.idle_seconds, 2),
     }
 
@@ -206,7 +204,7 @@ def annotate_frame(frame, detections, state_machine, frame_id, video_time):
 
         lines = [
             f"ID:{det.track_id} {state_name}",
-            f"W:{record.working_seconds:.0f}s M:{record.moving_seconds:.0f}s I:{record.idle_seconds:.0f}s",
+            f"W:{record.working_seconds:.0f}s I:{record.idle_seconds:.0f}s",
         ]
         text_width = max(cv2.getTextSize(line, font, 0.5, 1)[0][0] for line in lines)
         top = max(0, y1 - 44)
@@ -267,7 +265,7 @@ def run_pipeline(video_path: str) -> None:
     fps_start = time.perf_counter()
     fps_frames = 0
 
-    window_name = "Excavator Monitor (Native Speed)"
+    window_name = "Excavator Monitor"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
     try:
