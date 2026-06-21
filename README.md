@@ -3,19 +3,21 @@
 Kafka-based excavator activity monitoring from video using YOLOv8 + ByteTrack,
 Farneback optical flow, and a debounced state machine.
 
+For a complete architecture and file-by-file code explanation, see
+[`PROJECT_TECHNICAL_GUIDE.md`](PROJECT_TECHNICAL_GUIDE.md).
+
 This project has one supported runtime architecture:
 
 ```text
 cv_service/main.py
   -> reads video frames
   -> detects/tracks excavators with YOLOv8 + ByteTrack
-  -> classifies each track as IDLE / WORKING / MOVING
+  -> classifies each track as IDLE / WORKING
   -> publishes JSON events to Kafka
   -> writes latest annotated preview frame to runtime/latest_frame.jpg
 
 dashboard/app.py
   -> consumes Kafka events
-  -> displays the latest preview frame
   -> displays live metrics, tables, charts, and state changes
 ```
 
@@ -24,20 +26,20 @@ dashboard/app.py
 ```bash
 python -m venv .venv
 source .venv/bin/activate       # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r src/requirements.txt
 ```
 
 Expected local assets:
 
 ```text
-cv_service/models/best.pt
-dataset/excavator_03.mp4
+src/cv_service/models/best.pt
+src/dataset/excavator_03.mp4
 ```
 
 Optional config:
 
 ```bash
-cp .env.example .env
+cp src/.env.example src/.env
 ```
 
 ## Run
@@ -45,25 +47,25 @@ cp .env.example .env
 Start Kafka:
 
 ```bash
-docker compose up -d
+docker compose -f src/docker-compose.yml up -d
 ```
 
 Terminal 1: start the CV producer:
 
 ```bash
-python cv_service/main.py
+python src/cv_service/main.py
 ```
 
 Or pass a custom video:
 
 ```bash
-python cv_service/main.py dataset/custom.mp4
+python src/cv_service/main.py src/dataset/custom.mp4
 ```
 
 Terminal 2: start the dashboard:
 
 ```bash
-streamlit run dashboard/app.py
+streamlit run src/dashboard/app.py
 ```
 
 Open:
@@ -78,11 +80,31 @@ Kafka UI:
 http://localhost:9000
 ```
 
+## Dashboard Architecture
+
+The Streamlit UI does not consume Kafka inside rendering functions. A single
+cached `KafkaDashboardConsumer` runs in a background thread and writes validated
+events into a thread-safe, bounded `EventStore`. The UI reads immutable snapshots
+from the store every 0.5 seconds.
+
+```text
+Kafka -> KafkaDashboardConsumer -> EventStore -> Streamlit components
+```
+
+Dashboard responsibilities are separated under `src/dashboard/`:
+
+- `models.py`: validates the Kafka event contract.
+- `consumer.py`: owns Kafka polling and connection status.
+- `store.py`: keeps latest equipment state, bounded history, and transitions.
+- `services/metrics.py`: calculates aggregate dashboard metrics.
+- `components/`: renders status, metrics, charts, and tables.
+- `app.py`: wires dependencies and defines the page layout.
+
 ## State Logic
 
-- `WORKING`: arm/bucket optical-flow motion exceeds the configured threshold.
-- `MOVING`: bounding-box centroid displacement exceeds the movement threshold.
-- `IDLE`: neither working nor moving is confirmed.
+- `WORKING`: arm/bucket optical-flow motion or bounding-box centroid displacement
+  exceeds its configured threshold.
+- `IDLE`: neither activity signal is confirmed.
 
 Transitions require `FRAMES_TO_CONFIRM` consecutive frames to reduce flicker.
 Duration accounting uses source-video time, so metrics do not depend on how
@@ -92,9 +114,9 @@ fast the machine processes the video.
 
 | Setting | Effect |
 |---|---|
-| `TARGET_FPS` | Number of frames per second to run detection and optical flow on. Lower is faster. |
-| `PREVIEW_ENABLED` | Write latest annotated frame for the dashboard. |
-| `PREVIEW_FRAME_PATH` | Preview image path read by the dashboard. |
+| `TARGET_FPS` | Reserved configuration value; the current capture thread uses source-video FPS. |
+| `PREVIEW_ENABLED` | Write the latest annotated frame for optional external consumers. |
+| `PREVIEW_FRAME_PATH` | Output path for the optional preview image. |
 | `PREVIEW_JPEG_QUALITY` | JPEG quality for the preview image. |
 | `PREVIEW_EVERY_N_PROCESSED_FRAMES` | Write preview every N processed frames. Higher is faster. |
 | `DETECTION_IMGSZ` | YOLO inference image size. Lower is faster. |
@@ -105,7 +127,7 @@ fast the machine processes the video.
 | `ARM_REGION_RATIO` | Top fraction of bbox used as arm/bucket region. |
 | `OPTICAL_FLOW_MAX_WIDTH` | Internal resize width for optical flow. Lower is faster. |
 | `MOTION_MAGNITUDE_THRESHOLD` | Motion threshold for `WORKING`. |
-| `MOVE_THRESHOLD_PIXELS` | Centroid shift threshold for `MOVING`. |
+| `MOVE_THRESHOLD_PIXELS` | Centroid shift threshold for detecting `WORKING` activity. |
 | `FRAMES_TO_CONFIRM` | Debounce window for state changes. |
 
 If the dashboard stays mostly `IDLE`, lower `MOTION_MAGNITUDE_THRESHOLD`.
@@ -124,7 +146,6 @@ threshold is usually between idle motion and active arm/bucket motion.
   "motion_score": 2.314,
   "bbox": [120, 80, 340, 310],
   "working_seconds": 23.5,
-  "moving_seconds": 4.1,
   "idle_seconds": 8.9
 }
 ```
