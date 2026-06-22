@@ -5,7 +5,7 @@ SRC_ROOT = Path(__file__).resolve().parents[1]
 
 class Settings(BaseSettings):
     # Video
-    default_video_path: str = "dataset/excavator_02.mp4"
+    default_video_path: str = "dataset/excavator_03.mp4"
     target_fps: float = 30.0
     preview_enabled: bool = True
     preview_frame_path: str = "runtime/latest_frame.jpg"
@@ -17,17 +17,17 @@ class Settings(BaseSettings):
     detection_imgsz: int = 640
     detection_every_n_processed_frames: int = 1
     yolo_device: str | None = "0"
-    conf_threshold: float = 0.7
-    iou_threshold: float = 0.6
+    conf_threshold: float = 0.4
+    iou_threshold: float = 0.5
 
     # Optical flow — raised threshold + percentile scoring
     arm_region_ratio: float = 0.65
     optical_flow_max_width: int = 320
-    motion_magnitude_threshold: float = 0.40
+    motion_magnitude_threshold: float = 0.55   
 
     # State machine
-    move_threshold_pixels: float = 0.70
-    frames_to_confirm: int = 20
+    move_threshold_pixels: float = 0.55
+    frames_to_confirm: int = 30
     stale_track_timeout: float = 20.0
 
     # Kafka
