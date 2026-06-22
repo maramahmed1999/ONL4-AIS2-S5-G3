@@ -34,10 +34,10 @@ class EquipmentStateMachineTests(unittest.TestCase):
 
         record = machine.get_record(1)
         self.assertIsNotNone(record)
-        self.assertEqual(state, EquipmentState.MOVING)
+        self.assertEqual(state, EquipmentState.WORKING)
         self.assertTrue(changed)
         self.assertAlmostEqual(record.idle_seconds, 2.5)
-        self.assertAlmostEqual(record.moving_seconds, 0.0)
+        self.assertAlmostEqual(record.working_seconds, 0.0)
 
     def test_debounce_requires_consecutive_signals(self) -> None:
         machine = EquipmentStateMachine(frames_to_confirm=3)
@@ -66,7 +66,7 @@ class EquipmentStateMachineTests(unittest.TestCase):
         self.assertTrue(changed)
 
     def test_stale_tracks_are_purged(self) -> None:
-        machine = EquipmentStateMachine(frames_to_confirm=1, stale_timeout=0.001)
+        machine = EquipmentStateMachine(frames_to_confirm=1, stale_timeout=0.01)
         machine.update(
             track_id=1,
             bbox=(0, 0, 10, 10),
@@ -74,7 +74,7 @@ class EquipmentStateMachineTests(unittest.TestCase):
             motion_score=0.0,
         )
 
-        time.sleep(0.01)
+        time.sleep(0.05)
         self.assertEqual(machine.purge_stale_tracks(), [1])
         self.assertIsNone(machine.get_record(1))
 

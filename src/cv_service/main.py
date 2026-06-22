@@ -23,7 +23,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import settings
 from cv_service.detector import ExcavatorDetector
-from cv_service.kafka_producer import EventProducer
 from cv_service.motion import OpticalFlowAnalyzer
 from cv_service.state_machine import EquipmentState, EquipmentStateMachine, StateRecord
 
@@ -35,7 +34,6 @@ logger = logging.getLogger(__name__)
 
 STATE_COLOR_BGR: dict[str, tuple[int, int, int]] = {
     "WORKING": (50, 205, 50),
-    "MOVING": (0, 165, 255),
     "IDLE": (60, 60, 200),
 }
 
@@ -102,36 +100,6 @@ class CaptureThread(threading.Thread):
         return not self._shutdown.is_set() or not self.queue.empty()
 
 
-# ── Background Workers ───────────────────────────────────────────────────────
-
-class KafkaWorker(threading.Thread):
-    def __init__(self, producer: EventProducer, max_queue: int = 2000):
-        super().__init__(daemon=True, name="kafka-worker")
-        self.producer = producer
-        self.queue: Queue[dict] = Queue(maxsize=max_queue)
-        self._shutdown = threading.Event()
-
-    def send(self, event: dict) -> None:
-        try:
-            self.queue.put_nowait(event)
-        except Full:
-            pass
-
-    def run(self):
-        while not self._shutdown.is_set():
-            try:
-                event = self.queue.get(timeout=0.05)
-            except Empty:
-                self.producer._producer.poll(0)
-                continue
-            self.producer.send(event)
-
-    def stop(self):
-        self._shutdown.set()
-        self.join(timeout=2.0)
-        self.producer.flush(timeout=5.0)
-
-
 class PreviewWorker(threading.Thread):
     def __init__(self, output_path: Path, quality: int, max_queue: int = 2):
         super().__init__(daemon=True, name="preview-worker")
@@ -185,7 +153,6 @@ def build_event(track_id, state, record, motion_score, bbox, frame_id, video_tim
         "motion_score": motion_score,
         "bbox": list(bbox),
         "working_seconds": round(record.working_seconds, 2),
-        "moving_seconds": round(record.moving_seconds, 2),
         "idle_seconds": round(record.idle_seconds, 2),
     }
 
@@ -206,7 +173,7 @@ def annotate_frame(frame, detections, state_machine, frame_id, video_time):
 
         lines = [
             f"ID:{det.track_id} {state_name}",
-            f"W:{record.working_seconds:.0f}s M:{record.moving_seconds:.0f}s I:{record.idle_seconds:.0f}s",
+            f"W:{record.working_seconds:.0f}s I:{record.idle_seconds:.0f}s",
         ]
         text_width = max(cv2.getTextSize(line, font, 0.5, 1)[0][0] for line in lines)
         top = max(0, y1 - 44)
@@ -251,13 +218,6 @@ def run_pipeline(video_path: str) -> None:
         stale_timeout=settings.stale_track_timeout,
     )
 
-    producer = EventProducer(
-        bootstrap_servers=settings.kafka_bootstrap_servers,
-        topic=settings.kafka_topic,
-    )
-    kafka_worker = KafkaWorker(producer, max_queue=2000)
-    kafka_worker.start()
-
     preview_path = settings.resolve_path(settings.preview_frame_path)
     preview_worker = PreviewWorker(preview_path, settings.preview_jpeg_quality)
     preview_worker.start()
@@ -267,8 +227,13 @@ def run_pipeline(video_path: str) -> None:
     fps_start = time.perf_counter()
     fps_frames = 0
 
-    window_name = "Excavator Monitor (Native Speed)"
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    window_name = "Excavator Monitor"
+    gui_enabled = True
+    try:
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    except cv2.error:
+        gui_enabled = False
+        logger.warning("OpenCV GUI is unavailable; running headless preview mode only.")
 
     try:
         while True:
@@ -313,7 +278,7 @@ def run_pipeline(video_path: str) -> None:
                         det.track_id, state, record, motion_score,
                         det.bbox, frame_id, video_time,
                     )
-                    kafka_worker.send(event)
+                    logger.debug("Prepared event: %s", event)
 
                 # Log motion scores for tuning (first 5 detections or on change)
                 if changed or processed <= 5:
@@ -324,11 +289,12 @@ def run_pipeline(video_path: str) -> None:
                     )
 
             annotated = annotate_frame(frame, detections, state_machine, frame_id, video_time)
-            cv2.imshow(window_name, annotated)
+            if gui_enabled:
+                cv2.imshow(window_name, annotated)
 
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                logger.info("User pressed 'q' — stopping.")
-                break
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    logger.info("User pressed 'q' — stopping.")
+                    break
 
             preview_int = max(1, settings.preview_every_n_processed_frames)
             if settings.preview_enabled and processed % preview_int == 0:
@@ -354,9 +320,9 @@ def run_pipeline(video_path: str) -> None:
     except KeyboardInterrupt:
         logger.info("Interrupted.")
     finally:
-        cv2.destroyAllWindows()
+        if gui_enabled:
+            cv2.destroyAllWindows()
         capture.release()
-        kafka_worker.stop()
         preview_worker.stop()
         logger.info("Shutdown complete.")
 
