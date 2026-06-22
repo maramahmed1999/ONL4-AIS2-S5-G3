@@ -14,6 +14,7 @@ from cv_service.state_machine import EquipmentState, EquipmentStateMachine
 
 
 class EquipmentStateMachineTests(unittest.TestCase):
+    
     def test_uses_video_time_for_duration_accounting(self) -> None:
         machine = EquipmentStateMachine(frames_to_confirm=1)
 
