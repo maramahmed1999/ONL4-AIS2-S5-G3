@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 class EquipmentState(str, Enum):
     IDLE = "IDLE"
     WORKING = "WORKING"
-    MOVING = "MOVING"
 
 
 @dataclass
@@ -23,7 +22,6 @@ class StateRecord:
 
     # Time accounting (seconds spent in each state)
     working_seconds: float = 0.0
-    moving_seconds: float = 0.0
     idle_seconds: float = 0.0
 
     # Internal timestamps
@@ -32,7 +30,6 @@ class StateRecord:
 
     # Debounce frame counters — prevent noisy single-frame state flips
     _working_streak: int = field(default=0, repr=False)
-    _moving_streak: int = field(default=0, repr=False)
     _idle_streak: int = field(default=0, repr=False)
 
 
@@ -41,16 +38,9 @@ class EquipmentStateMachine:
     Manages state transitions for multiple concurrent excavator tracks.
 
     State model:
-    ┌─────────┐  arm motion > threshold (N frames)  ┌─────────┐
-    │  IDLE   │ ──────────────────────────────────▶ │ WORKING │
-    │         │ ◀────────────────────────────────── │         │
-    └─────────┘  no motion (N frames)               └─────────┘
-         │                                                │
-         │  centroid shift > move_px (N frames)           │
-         ▼                                                ▼
-    ┌─────────┐ ◀─────────── no shift (N frames) ── ┌─────────┐
-    │ MOVING  │                                      │ MOVING  │
-    └─────────┘                                      └─────────┘
+    - WORKING: arm/bucket optical flow or machine centroid displacement is active
+      for N consecutive frames.
+    - IDLE: neither activity signal is active for N consecutive frames.
 
     Key design decisions:
     - Debouncing: a state change requires N *consecutive* frames with the same signal.
@@ -58,13 +48,13 @@ class EquipmentStateMachine:
     - Time accounting: time elapsed since last update is attributed to the PREVIOUS state
       (the state the equipment was in during that interval).
     - Centroid displacement: computed from the YOLO/ByteTrack bbox center across frames.
-      Large displacement → machine is traveling; small → stationary or arm-only motion.
+      Large displacement is treated as working activity alongside arm/bucket motion.
     - Stale tracks: tracks not updated for `stale_timeout` seconds are purged automatically.
     """
 
     def __init__(
         self,
-        move_threshold_pixels: float = 15.0,
+        move_threshold_pixels: float = 20.0,
         frames_to_confirm: int = 5,
         stale_timeout: float = 10.0,
     ) -> None:
@@ -89,20 +79,15 @@ class EquipmentStateMachine:
 
         cx, cy = self._centroid(bbox)
         displacement = self._update_centroid(track_id, cx, cy)
-        is_moving_signal = displacement > self._move_threshold
+        is_displacement_signal = displacement > self._move_threshold
+        is_active_signal = is_working_signal or is_displacement_signal
 
-        if is_working_signal:
+        if is_active_signal:
             record._working_streak += 1
-            record._moving_streak = 0
-            record._idle_streak = 0
-        elif is_moving_signal:
-            record._moving_streak += 1
-            record._working_streak = 0
             record._idle_streak = 0
         else:
             record._idle_streak += 1
             record._working_streak = 0
-            record._moving_streak = 0
 
         n = self._frames_to_confirm  # frame-confirmation threshold
         prev_state = record.state
@@ -111,12 +96,15 @@ class EquipmentStateMachine:
 
         if record._working_streak >= n:
             record.state = EquipmentState.WORKING
-        elif record._moving_streak >= n:
-            record.state = EquipmentState.MOVING
         elif record._idle_streak >= n:
             record.state = EquipmentState.IDLE
 
         state_changed = record.state != prev_state
+        print(
+        f"track={track_id}, "
+        f"working_signal={is_working_signal}, "
+        f"motion_score={motion_score}"
+        )
         return record.state, state_changed
 
     def get_record(self, track_id: int) -> StateRecord | None:
@@ -189,7 +177,5 @@ class EquipmentStateMachine:
     def _accumulate_time(record: StateRecord, elapsed: float) -> None:
         if record.state == EquipmentState.WORKING:
             record.working_seconds += elapsed
-        elif record.state == EquipmentState.MOVING:
-            record.moving_seconds += elapsed
         else:
             record.idle_seconds += elapsed

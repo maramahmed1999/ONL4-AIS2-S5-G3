@@ -1,265 +1,139 @@
 from __future__ import annotations
 
-import json
 import sys
-import uuid
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
 
-import pandas as pd
 import streamlit as st
-from confluent_kafka import Consumer, KafkaError
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+SRC_ROOT = Path(__file__).resolve().parents[1]
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from config.settings import settings
+from dashboard.components.charts import (
+    render_motion_chart,
+    render_state_distribution_chart,
+    render_utilization_chart,
+)
+from dashboard.components.controls import render_source_and_actions, render_status_panel
+from dashboard.components.export import render_download_button
+from dashboard.components.overview import render_metric_cards
+from dashboard.components.status import render_connection_status
+from dashboard.components.tables import render_equipment_table, render_summary_table
+from dashboard.components.video import render_live_preview
+from dashboard.consumer import KafkaDashboardConsumer
+from dashboard.services.metrics import build_track_summaries, calculate_metrics
+from dashboard.services.pipeline_manager import PipelineManager
+from dashboard.store import EventStore
+
+LIVE_REFRESH_SECONDS = 0.5
+ANALYTICS_REFRESH_SECONDS = 1.5
+STATUS_REFRESH_SECONDS = 1.0
+OFFLINE_AFTER_SECONDS = 5.0
+
+st.set_page_config(
+    page_title="Excavator Activity Monitor",
+    page_icon="🏗️",
+    layout="wide",
+)
 
 
-REFRESH_SECONDS: Final[float] = 0.5
-MAX_EVENTS_PER_TICK: Final[int] = 300
-MAX_STATE_CHANGES: Final[int] = 100
-
-STATE_BADGE: Final[dict[str, str]] = {
-    "WORKING": "WORKING",
-    "MOVING": "MOVING",
-    "IDLE": "IDLE",
-}
-
-
-@dataclass(frozen=True)
-class DashboardState:
-    consumer: Consumer
-    group_id: str
-
-
-def _fmt(seconds: float) -> str:
-    total = int(seconds)
-    hours, rem = divmod(total, 3600)
-    minutes, secs = divmod(rem, 60)
-    if hours:
-        return f"{hours}h {minutes}m {secs}s"
-    if minutes:
-        return f"{minutes}m {secs}s"
-    return f"{secs}s"
-
-
-def _pct(part: float, total: float) -> str:
-    return "-" if total <= 0 else f"{part / total * 100:.1f}%"
-
-
-def _make_consumer() -> DashboardState:
-    group_id = f"{settings.kafka_consumer_group_id}-{uuid.uuid4().hex[:8]}"
-    consumer = Consumer(
-        {
-            "bootstrap.servers": settings.kafka_bootstrap_servers,
-            "group.id": group_id,
-            "auto.offset.reset": "earliest",
-            "enable.auto.commit": False,
-        }
+@st.cache_resource(show_spinner=False)
+def get_dashboard_runtime() -> tuple[EventStore, KafkaDashboardConsumer]:
+    store = EventStore(
+        max_events=1000,
+        max_transitions=250,
+        stale_track_seconds=10.0,
     )
-    consumer.subscribe([settings.kafka_topic])
-    return DashboardState(consumer=consumer, group_id=group_id)
-
-
-def _init_session() -> None:
-    defaults: dict[str, Any] = {
-        "dashboard_state": None,
-        "track_data": {},
-        "event_log": [],
-        "total_events": 0,
-        "kafka_error": None,
-    }
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
-
-
-def _get_dashboard_state() -> DashboardState:
-    if st.session_state.dashboard_state is None:
-        st.session_state.dashboard_state = _make_consumer()
-    return st.session_state.dashboard_state
-
-
-def _reset_consumer() -> None:
-    state = st.session_state.get("dashboard_state")
-    if state is not None:
-        state.consumer.close()
-    st.session_state.dashboard_state = _make_consumer()
-    st.session_state.track_data = {}
-    st.session_state.event_log = []
-    st.session_state.total_events = 0
-    st.session_state.kafka_error = None
-
-
-def _consume_events(state: DashboardState) -> None:
-    for _ in range(MAX_EVENTS_PER_TICK):
-        msg = state.consumer.poll(0.01)
-        if msg is None:
-            break
-
-        if msg.error():
-            if msg.error().code() != KafkaError._PARTITION_EOF:
-                st.session_state.kafka_error = str(msg.error())
-            continue
-
-        try:
-            event = json.loads(msg.value().decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            st.session_state.kafka_error = f"Invalid Kafka event: {exc}"
-            continue
-
-        track_id = int(event["track_id"])
-        previous = st.session_state.track_data.get(track_id)
-        st.session_state.track_data[track_id] = event
-        st.session_state.total_events += 1
-
-        if previous is None or previous.get("state") != event.get("state"):
-            st.session_state.event_log.append(event)
-            st.session_state.event_log = st.session_state.event_log[-MAX_STATE_CHANGES:]
-
-
-def _render_preview() -> None:
-    preview_path = settings.resolve_path(settings.preview_frame_path)
-    if not settings.preview_enabled:
-        st.info("Preview frame writing is disabled.")
-        return
-
-    if not preview_path.exists():
-        st.info("Waiting for CV service preview frame...")
-        return
-
-    try:
-        image_bytes = preview_path.read_bytes()
-    except OSError:
-        st.info("Preview frame is being updated...")
-        return
-
-    st.image(image_bytes, use_container_width=True)
-    st.caption(f"Preview: {preview_path}")
-
-
-def _render_metrics() -> None:
-    track_data: dict[int, dict] = st.session_state.track_data
-    working = sum(1 for event in track_data.values() if event.get("state") == "WORKING")
-    moving = sum(1 for event in track_data.values() if event.get("state") == "MOVING")
-    idle = sum(1 for event in track_data.values() if event.get("state") == "IDLE")
-
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Tracked", len(track_data))
-    col2.metric("Working", working)
-    col3.metric("Moving", moving)
-    col4.metric("Idle", idle)
-
-
-def _render_tables() -> None:
-    track_data: dict[int, dict] = st.session_state.track_data
-    if not track_data:
-        st.info("No Kafka events received yet. Start `python cv_service\\main.py`.")
-        return
-
-    rows = []
-    for track_id, event in sorted(track_data.items()):
-        working = float(event.get("working_seconds", 0.0))
-        moving = float(event.get("moving_seconds", 0.0))
-        idle = float(event.get("idle_seconds", 0.0))
-        total = working + moving + idle
-        rows.append(
-            {
-                "ID": track_id,
-                "State": STATE_BADGE.get(event.get("state"), event.get("state")),
-                "Motion": round(float(event.get("motion_score", 0.0)), 3),
-                "Working": _fmt(working),
-                "Moving": _fmt(moving),
-                "Idle": _fmt(idle),
-                "Util%": _pct(working, total),
-                "Frame": event.get("frame_id"),
-                "Video Time": _fmt(float(event.get("video_time_seconds", 0.0))),
-            }
-        )
-
-    st.subheader("Equipment Status")
-    st.dataframe(pd.DataFrame(rows), hide_index=True, width='stretch')
-
-    chart_rows = []
-    for track_id, event in sorted(track_data.items()):
-        chart_rows.extend(
-            [
-                {"Track": f"#{track_id}", "State": "Working", "Seconds": event.get("working_seconds", 0.0)},
-                {"Track": f"#{track_id}", "State": "Moving", "Seconds": event.get("moving_seconds", 0.0)},
-                {"Track": f"#{track_id}", "State": "Idle", "Seconds": event.get("idle_seconds", 0.0)},
-            ]
-        )
-    pivot = (
-        pd.DataFrame(chart_rows)
-        .pivot(index="Track", columns="State", values="Seconds")
-        .fillna(0)
-        .reindex(columns=["Working", "Moving", "Idle"], fill_value=0)
+    consumer = KafkaDashboardConsumer(
+        store=store,
+        bootstrap_servers=settings.kafka_bootstrap_servers,
+        topic=settings.kafka_topic,
+        group_id=settings.kafka_consumer_group_id,
     )
-    st.bar_chart(pivot, color=["#32cd32", "#ffa500", "#cc3333"])
-
-    with st.expander("State Change Log", expanded=False):
-        log_rows = []
-        for event in reversed(st.session_state.event_log):
-            log_rows.append(
-                {
-                    "Time": str(event.get("timestamp", ""))[11:19],
-                    "Track": event.get("track_id"),
-                    "State": event.get("state"),
-                    "Motion": round(float(event.get("motion_score", 0.0)), 3),
-                    "Frame": event.get("frame_id"),
-                }
-            )
-        if log_rows:
-            st.dataframe(pd.DataFrame(log_rows), hide_index=True, width='stretch')
-        else:
-            st.caption("No state transitions yet.")
+    consumer.start()
+    return store, consumer
 
 
-@st.fragment(run_every=REFRESH_SECONDS)
-def _live_dashboard() -> None:
-    state = _get_dashboard_state()
-    _consume_events(state)
-
-    if st.session_state.kafka_error:
-        st.error(st.session_state.kafka_error)
-
-    st.caption(
-        f"Kafka: `{settings.kafka_bootstrap_servers}` | "
-        f"Topic: `{settings.kafka_topic}` | "
-        f"Consumer group: `{state.group_id}` | "
-        f"Events: `{st.session_state.total_events}`"
+@st.cache_resource(show_spinner=False)
+def get_pipeline_manager() -> PipelineManager:
+    return PipelineManager(
+        src_root=SRC_ROOT,
+        uploads_dir=settings.resolve_path("runtime/uploads"),
+        log_path=settings.resolve_path("runtime/pipeline.log"),
     )
 
-    left, right = st.columns([3, 2], gap="medium")
-    with left:
-        st.subheader("Latest Annotated Frame")
-        _render_preview()
-    with right:
-        st.subheader("Live Metrics")
-        _render_metrics()
 
+store, consumer = get_dashboard_runtime()
+pipeline_manager = get_pipeline_manager()
+preview_path = settings.resolve_path(settings.preview_frame_path)
+
+st.title("Excavator Activity Monitor")
+st.caption("Upload a video or connect a live camera, then watch detection, tracking, and activity state in real time.")
+
+with st.sidebar:
+    render_source_and_actions(pipeline_manager)
     st.divider()
-    _render_tables()
+
+    @st.fragment(run_every=STATUS_REFRESH_SECONDS)
+    def render_sidebar_status() -> None:
+        render_status_panel(pipeline_manager.status())
+        with st.expander("Pipeline log"):
+            log_text = pipeline_manager.tail_log(max_lines=200)
+            st.code(log_text or "No log output yet.", language="text")
+
+    render_sidebar_status()
 
 
-def main() -> None:
-    st.set_page_config(page_title="Excavator Kafka Monitor", layout="wide")
-    _init_session()
+live_tab, analytics_tab = st.tabs(["🎥 Live Monitor", "📊 Analytics"])
 
-    st.title("Excavator Activity Monitor")
-    st.caption("Kafka-based dashboard. Run Docker Compose, then start the CV service.")
+with live_tab:
+    @st.fragment(run_every=LIVE_REFRESH_SECONDS)
+    def render_live_tab() -> None:
+        snapshot = store.snapshot()
+        consumer_status = consumer.snapshot()
+        metrics = calculate_metrics(snapshot)
 
-    with st.sidebar:
-        st.header("Runtime")
-        st.code("docker compose up -d\npython cv_service\\main.py", language="powershell")
-        st.divider()
-        if st.button("Reset Consumer"):
-            _reset_consumer()
-            st.rerun()
+        render_connection_status(
+            consumer_status,
+            metrics,
+            offline_after_seconds=OFFLINE_AFTER_SECONDS,
+        )
+        render_metric_cards(metrics)
 
-    _live_dashboard()
+        video_column, equipment_column = st.columns((1.4, 1))
+        with video_column:
+            render_live_preview(preview_path, pipeline_manager.is_running())
+        with equipment_column:
+            render_equipment_table(snapshot.latest_by_track)
 
+    render_live_tab()
 
-if __name__ == "__main__":
-    main()
+with analytics_tab:
+    @st.fragment(run_every=ANALYTICS_REFRESH_SECONDS)
+    def render_analytics_tab() -> None:
+        snapshot = store.snapshot()
+        summaries = build_track_summaries(snapshot)
+
+        summary_column, download_column = st.columns((3, 1))
+        with summary_column:
+            render_summary_table(summaries)
+        with download_column:
+            st.write("")
+            st.write("")
+            render_download_button(summaries)
+
+        chart_column_left, chart_column_right = st.columns(2)
+        with chart_column_left:
+            render_state_distribution_chart(snapshot.latest_by_track)
+        with chart_column_right:
+            render_utilization_chart(summaries)
+
+        render_motion_chart(snapshot.history)
+
+        st.caption(
+            f"Received events: {snapshot.total_events:,} · "
+            f"Invalid events: {consumer.snapshot().invalid_messages:,}"
+        )
+
+    render_analytics_tab()

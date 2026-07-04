@@ -1,36 +1,33 @@
 from pathlib import Path
-
 from pydantic_settings import BaseSettings
-
 
 SRC_ROOT = Path(__file__).resolve().parents[1]
 
-
 class Settings(BaseSettings):
     # Video
-    default_video_path: str = "dataset/excavator_03.mp4"
-    target_fps: float = 5.0
+    default_video_path: str = "dataset/video2.mp4"
+    target_fps: float = 30.0
     preview_enabled: bool = True
     preview_frame_path: str = "runtime/latest_frame.jpg"
     preview_jpeg_quality: int = 80
-    preview_every_n_processed_frames: int = 5
+    preview_every_n_processed_frames: int = 3
 
     # Detection
     model_path: str = "cv_service/models/best.pt"
     detection_imgsz: int = 640
     detection_every_n_processed_frames: int = 1
-    yolo_device: str | None = "cpu"
+    yolo_device: str | None = "0"
     conf_threshold: float = 0.4
     iou_threshold: float = 0.5
 
-    # Optical flow
-    arm_region_ratio: float = 0.65
-    optical_flow_max_width: int = 640
-    motion_magnitude_threshold: float = 0.35
+    # Optical flow — raised threshold + percentile scoring
+    arm_region_ratio: float = 1.0
+    optical_flow_max_width: int = 320
+    motion_magnitude_threshold: float = 0.55
 
     # State machine
-    move_threshold_pixels: float = 0.3
-    frames_to_confirm: int = 3
+    move_threshold_pixels: float = 15
+    frames_to_confirm: int = 5
     stale_track_timeout: float = 10.0
 
     # Kafka
@@ -47,6 +44,5 @@ class Settings(BaseSettings):
     def resolve_path(self, path_value: str | Path) -> Path:
         path = Path(path_value)
         return path if path.is_absolute() else SRC_ROOT / path
-
 
 settings = Settings()

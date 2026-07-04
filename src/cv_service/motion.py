@@ -9,29 +9,21 @@ logger = logging.getLogger(__name__)
 
 _FARNEBACK_PARAMS = dict(
     pyr_scale=0.5,
-    levels=2,       # was 3
-    winsize=13,     # was 15
-    iterations=2,   # was 3
+    levels=2,
+    winsize=11,
+    iterations=1,
     poly_n=5,
-    poly_sigma=1.2,
+    poly_sigma=1.1,
     flags=0,
 )
 
 
 class OpticalFlowAnalyzer:
-    """
-    ROI-based Farneback optical flow.
-
-    The analyzer keeps the previous processed frame and the current processed
-    frame, then computes dense optical flow only inside the arm/bucket region of
-    each detected excavator. This is much cheaper than full-frame dense flow.
-    """
-
     def __init__(
         self,
-        arm_region_ratio: float = 0.65,
-        magnitude_threshold: float = 0.35,
-        max_width: int | None = 640,
+        arm_region_ratio: float = 1.0,
+        magnitude_threshold: float = 0.55,
+        max_width: int | None = 320,
     ) -> None:
         if not 0.0 < arm_region_ratio <= 1.0:
             raise ValueError("arm_region_ratio must be in (0, 1]")
@@ -48,24 +40,15 @@ class OpticalFlowAnalyzer:
         self._threshold = magnitude_threshold
 
     def update(self, frame: np.ndarray) -> bool:
-        """
-        Load a new processed frame.
-
-        Returns True when a previous frame exists and ROI motion can be scored.
-        On the first processed frame, stores it as the baseline and returns False.
-        """
         gray = self._to_flow_gray(frame)
-
         if self._prev_gray is None:
             self._prev_gray = gray
             self._curr_gray = None
             return False
-
         self._curr_gray = gray
         return True
 
     def finish_frame(self) -> None:
-        """Advance the current processed frame to become the previous frame."""
         if self._curr_gray is not None:
             self._prev_gray = self._curr_gray
             self._curr_gray = None
@@ -85,11 +68,16 @@ class OpticalFlowAnalyzer:
 
         flow = cv2.calcOpticalFlowFarneback(prev_roi, curr_roi, None, **_FARNEBACK_PARAMS)
         magnitude, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-        return float(np.mean(magnitude))
+        
+        # Use 90th percentile instead of mean — much less sensitive to noise
+        score = float(np.percentile(magnitude, 90))
+        return score
 
     def is_working(self, _flow_ready: object, bbox: tuple[int, int, int, int]) -> tuple[bool, float]:
         score = self.get_arm_region_score(bbox)
+        print(score)
         return score > self._threshold, round(score, 4)
+    
 
     def _to_flow_gray(self, frame: np.ndarray) -> np.ndarray:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)

@@ -252,4 +252,8 @@ runtime/*
 .DS_Store
 Thumbs.db
 
+.agents
+
+PROJECT_TECHNICAL_GUIDE.md
+
 

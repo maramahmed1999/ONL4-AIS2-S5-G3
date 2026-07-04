@@ -10,7 +10,15 @@ confluent-kafka>=2.3.0
 # ── Config ────────────────────────────────────────────────────────────────────
 pydantic>=2.7.0
 pydantic-settings>=2.3.0
+python-dotenv>=1.0.0
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 streamlit>=1.35.0
 pandas>=2.2.0
+openpyxl>=3.1.0                    # xlsx write engine for the dashboard's Excel export
+
+# ── Core ML / CV ─────────────────────────────────────────────────────────────
+# PyTorch with CUDA 12.1 (RTX 4060 compatible).
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+torch>=2.3.0
+torchvision>=0.18.0
