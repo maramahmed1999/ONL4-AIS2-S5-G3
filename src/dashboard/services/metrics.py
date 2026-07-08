@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from dashboard.models import TrackSummary
-from dashboard.store import DashboardSnapshot
+from dashboard.store import AllSessionsSnapshot, DashboardSnapshot
 
 
 @dataclass(frozen=True)
@@ -52,8 +52,23 @@ def build_track_summaries(snapshot: DashboardSnapshot) -> list[TrackSummary]:
     leaves the frame still appears in the summary table / Excel export
     with its final totals, instead of disappearing.
     """
+    session_id = snapshot.session_id or "unknown"
     summaries = [
-        TrackSummary.from_event(event)
+        TrackSummary.from_event(event, session_id=session_id)
         for event in snapshot.all_latest_by_track.values()
     ]
     return sorted(summaries, key=lambda summary: summary.track_id)
+
+
+def build_all_track_summaries(all_snapshot: AllSessionsSnapshot) -> list[TrackSummary]:
+    """Same as build_track_summaries, but merged across every session.
+
+    One row per (session, track) — sorted by session first, then track ID —
+    so a "Track 1" from one session is never combined with, or mistaken
+    for, a "Track 1" from a different session.
+    """
+    summaries = [
+        TrackSummary.from_event(event, session_id=session_id)
+        for session_id, event in all_snapshot.all_latest_events
+    ]
+    return sorted(summaries, key=lambda summary: (summary.session_id, summary.track_id))

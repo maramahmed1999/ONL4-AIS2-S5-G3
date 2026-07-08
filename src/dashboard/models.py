@@ -48,6 +48,7 @@ class TrackSummary(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     track_id: int
+    session_id: str
     state: Literal["IDLE", "WORKING"]
     working_seconds: float = Field(ge=0)
     idle_seconds: float = Field(ge=0)
@@ -63,9 +64,10 @@ class TrackSummary(BaseModel):
         return (self.working_seconds / total * 100.0) if total > 0 else 0.0
 
     @classmethod
-    def from_event(cls, event: DashboardEvent) -> "TrackSummary":
+    def from_event(cls, event: DashboardEvent, session_id: str) -> "TrackSummary":
         return cls(
             track_id=event.track_id,
+            session_id=session_id,
             state=event.state,
             working_seconds=event.working_seconds,
             idle_seconds=event.idle_seconds,
@@ -91,3 +93,4 @@ class PipelineStatus(BaseModel):
     started_at: datetime | None = None
     return_code: int | None = None
     error: str | None = None
+    session_id: str | None = None

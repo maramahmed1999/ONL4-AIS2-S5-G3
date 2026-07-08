@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 CAIRO = ZoneInfo("Africa/Cairo")
 
 _COLUMNS = [
+    "Session ID",
     "Track ID",
     "Last state",
     "Working Time (s)",
@@ -25,6 +26,7 @@ def build_summary_dataframe(summaries: list[TrackSummary]) -> pd.DataFrame:
     so the download always matches what's on screen."""
     rows = [
         {
+            "Session ID": summary.session_id,
             "Track ID": summary.track_id,
             "Last state": summary.state,
             "Working Time (s)": round(summary.working_seconds, 2),

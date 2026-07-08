@@ -5,11 +5,13 @@ import logging
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Callable
 
 from confluent_kafka import Consumer, KafkaError
 from pydantic import ValidationError
 
 from dashboard.models import DashboardEvent
+from dashboard.persistence import PersistenceRepository
 from dashboard.store import EventStore
 
 logger = logging.getLogger(__name__)
@@ -33,11 +35,22 @@ class KafkaDashboardConsumer:
         bootstrap_servers: str,
         topic: str,
         group_id: str,
+        session_id_provider: Callable[[], str | None] | None = None,
+        persistence: PersistenceRepository | None = None,
     ) -> None:
         self._store = store
         self._bootstrap_servers = bootstrap_servers
         self._topic = topic
         self._group_id = group_id
+        # Asked once per incoming message: "what session/run is currently
+        # active?" This is how each event gets tagged with the upload/live
+        # run it belongs to, without cv_service or the Kafka schema ever
+        # needing to know sessions exist. Defaults to "no session" so this
+        # class still works standalone (e.g. in tests) without a provider.
+        self._session_id_provider = session_id_provider or (lambda: None)
+        # Optional SQLite durability layer — purely additive. When absent
+        # (e.g. in tests), the consumer behaves exactly as it did before.
+        self._persistence = persistence
         self._shutdown = threading.Event()
         self._status_lock = threading.RLock()
         self._thread: threading.Thread | None = None
@@ -122,7 +135,19 @@ class KafkaDashboardConsumer:
             return
 
         received_at = datetime.now(timezone.utc)
-        self._store.append(event, received_at=received_at)
+        # Read the current session once and reuse it for both writes below,
+        # so the in-memory store and the SQLite log can never disagree
+        # about which session this event belongs to (the provider's answer
+        # could otherwise change between two separate reads if a run
+        # stops/starts mid-message).
+        session_id = self._session_id_provider()
+        self._store.append(
+            event,
+            session_id=session_id,
+            received_at=received_at,
+        )
+        if self._persistence is not None:
+            self._persistence.record_event(event, session_id=session_id or "unknown")
         self._update_status(last_message_at=received_at, last_error=None)
 
     def _update_status(

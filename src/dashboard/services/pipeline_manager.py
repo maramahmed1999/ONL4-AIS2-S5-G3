@@ -8,12 +8,14 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO
 
 from dashboard.models import PipelineSource, PipelineStatus
+from dashboard.persistence import PersistenceRepository
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,7 @@ class _RunningProcess:
     source_label: str
     started_at: datetime
     log_file: BinaryIO
+    session_id: str
 
 
 class PipelineManager:
@@ -56,6 +59,7 @@ class PipelineManager:
         src_root: Path,
         uploads_dir: Path,
         log_path: Path,
+        persistence: PersistenceRepository | None = None,
     ) -> None:
         self._src_root = src_root
         self._main_script = src_root / "cv_service" / "main.py"
@@ -63,11 +67,19 @@ class PipelineManager:
         self._log_path = log_path
         self._uploads_dir.mkdir(parents=True, exist_ok=True)
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
+        # Optional SQLite durability layer — purely additive. When absent
+        # (e.g. in tests), PipelineManager behaves exactly as it did before.
+        self._persistence = persistence
 
         self._lock = threading.RLock()
         self._process: _RunningProcess | None = None
         self._last_error: str | None = None
         self._last_return_code: int | None = None
+        # The session ID of the currently-running (or most recently started)
+        # pipeline run, and a lookup of every session's human-readable label
+        # ("Upload: clip.mp4", "Live Camera (device 0)") for the UI picker.
+        self._current_session_id: str | None = None
+        self._session_labels: dict[str, str] = {}
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -84,6 +96,11 @@ class PipelineManager:
         with self._lock:
             if self.is_running():
                 raise RuntimeError("Detection is already running — stop it before starting a new run.")
+
+            # Mint a new session ID for this run only once we know it's
+            # actually going to start — this is what keeps this run's
+            # excavator track IDs from being merged with the previous run's.
+            session_id = uuid.uuid4().hex[:8]
 
             if source is PipelineSource.UPLOAD:
                 if video_path is None or not video_path.exists():
@@ -116,10 +133,19 @@ class PipelineManager:
                 source_label=source_label,
                 started_at=datetime.now(timezone.utc),
                 log_file=log_file,
+                session_id=session_id,
             )
+            self._current_session_id = session_id
+            self._session_labels[session_id] = source_label
             self._last_error = None
             self._last_return_code = None
-            logger.info("Pipeline started (pid=%s): %s", popen.pid, source_label)
+            if self._persistence is not None:
+                self._persistence.start_session(
+                    session_id,
+                    video_name=source_label,
+                    started_at=self._process.started_at,
+                )
+            logger.info("Pipeline started (pid=%s, session=%s): %s", popen.pid, session_id, source_label)
 
     def stop(self) -> None:
         with self._lock:
@@ -144,6 +170,8 @@ class PipelineManager:
             self._last_return_code = popen.returncode
             process.log_file.close()
             self._process = None
+            if self._persistence is not None:
+                self._persistence.end_session(process.session_id, ended_at=datetime.now(timezone.utc))
             logger.info("Pipeline stopped (return_code=%s)", self._last_return_code)
 
     def is_running(self) -> bool:
@@ -160,6 +188,8 @@ class PipelineManager:
                     "Check the pipeline log for details."
                 )
             self._process.log_file.close()
+            if self._persistence is not None:
+                self._persistence.end_session(self._process.session_id, ended_at=datetime.now(timezone.utc))
             self._process = None
             return False
 
@@ -174,6 +204,7 @@ class PipelineManager:
                     started_at=self._process.started_at,
                     return_code=None,
                     error=None,
+                    session_id=self._process.session_id,
                 )
             return PipelineStatus(
                 running=False,
@@ -182,7 +213,23 @@ class PipelineManager:
                 started_at=None,
                 return_code=self._last_return_code,
                 error=self._last_error,
+                session_id=self._current_session_id,
             )
+
+    def current_session_id(self) -> str | None:
+        """The session ID of the currently-running (or most recently started) run.
+
+        Used by KafkaDashboardConsumer to stamp every incoming event with the
+        session it belongs to, and by the Live tab to always show the
+        current run's data.
+        """
+        with self._lock:
+            return self._current_session_id
+
+    def session_label(self, session_id: str) -> str | None:
+        """Human-readable label for a session ID, e.g. 'Upload: clip.mp4'."""
+        with self._lock:
+            return self._session_labels.get(session_id)
 
     def tail_log(self, max_lines: int = 200) -> str:
         if not self._log_path.exists():
