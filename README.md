@@ -13,6 +13,12 @@ A real-time computer vision system that monitors excavator activity from video s
 Watch a short demonstration of the system:
 
 (https://youtu.be/cdY8Ygh74Wk)
+## 📷 Dashboard Preview
+
+### Live Monitoring
+<p align="center">
+  <img src="docs/images/live_monitor.png" width="900">
+</p>
 
 ---
 ## Features
@@ -46,7 +52,7 @@ Watch a short demonstration of the system:
 Video / Camera
       │
       ▼
-YOLOv8 + ByteTrack
+YOLOv26n + ByteTrack
       │
 Optical Flow
       │
@@ -150,3 +156,28 @@ src/
 ├── tests/
 requirements.txt
 ```
+---
+## Results
+
+The system successfully provides:
+
+- Real-time excavator detection
+- WORKING / IDLE classification
+- Live analytics dashboard
+- Kafka event streaming
+- Session-based historical analysis
+- Model performance monitoring
+---
+## Future Work
+- Cloud deployment with Kafka support
+- Multi-camera monitoring
+- Additional construction equipment classes
+- Model retraining pipeline
+---
+## Contributors
+- Maram Hazem Fouad 
+- Beshoy Osama Azmy 
+- Abdulrahman Mohammed Abdelfatah 
+- Mohammed Mahmoud hasnen  
+- Noura Mohamed Gaber 
+- Ahmed Mohamed Adel  
