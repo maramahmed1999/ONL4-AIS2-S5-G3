@@ -144,10 +144,3 @@ src/
 ├── tests/
 requirements.txt
 ```
-
-## Documentation
-
-For a detailed explanation of the project architecture and implementation, see:
-
-- PROJECT_TECHNICAL_GUIDE.md
-- SYSTEM_MONITORING_BRIEFING.md
