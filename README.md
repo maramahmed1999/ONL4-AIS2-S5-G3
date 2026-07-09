@@ -1,4 +1,4 @@
-# Excavator Activity Monitoring System
+# Excavator Activity Monitor System
 
 A real-time computer vision system that monitors excavator activity from video streams using **YOLOv26n**, **ByteTrack**, and **Optical Flow**. The system detects and tracks excavators, classifies their activity as **WORKING** or **IDLE**, streams events through **Apache Kafka**, and visualizes live analytics in an interactive **Streamlit dashboard**.
 
