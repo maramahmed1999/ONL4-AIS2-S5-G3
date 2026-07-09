@@ -142,7 +142,7 @@ src/
 ├── models/
 ├── runtime/
 ├── tests/
-└── requirements.txt
+requirements.txt
 ```
 
 ## Documentation
