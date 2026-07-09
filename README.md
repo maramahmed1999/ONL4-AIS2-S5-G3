@@ -16,7 +16,7 @@ Watch a short demonstration of the system:
 ## 📷 Dashboard Preview
 
 ### Live Monitoring
-![Dashboard](docs/dashboard.PNG)
+![Dashboard](docs/dashboard.png)
 
 ---
 ## Features
