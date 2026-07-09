@@ -17,7 +17,7 @@ Watch a short demonstration of the system:
 
 ### Live Monitoring
 <p align="center">
-  <img src="docs/images/live_monitor.png" width="900">
+  <img src="docs/dashboard.png" width="900">
 </p>
 
 ---
