@@ -16,7 +16,7 @@ Watch a short demonstration of the system:
 ## 📷 Dashboard Preview
 
 ### Live Monitoring
-![Dashboard](docs/dashboard.png)
+![Dashboard]([docs/dashboard.png](https://github.com/maramahmed1999/ONL4-AIS2-S5-G3/blob/main/docs/dashboard.png))
 
 ---
 ## Features
