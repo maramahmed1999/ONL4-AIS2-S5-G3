@@ -45,13 +45,7 @@ def calculate_metrics(
 
 
 def build_track_summaries(snapshot: DashboardSnapshot) -> list[TrackSummary]:
-    """One row per excavator ever seen this session, sorted by track ID.
-
-    Uses the never-pruned `all_latest_by_track` map (not the staleness-
-    filtered `latest_by_track`) so a machine that finishes working and
-    leaves the frame still appears in the summary table / Excel export
-    with its final totals, instead of disappearing.
-    """
+    
     session_id = snapshot.session_id or "unknown"
     summaries = [
         TrackSummary.from_event(event, session_id=session_id)
@@ -61,12 +55,6 @@ def build_track_summaries(snapshot: DashboardSnapshot) -> list[TrackSummary]:
 
 
 def build_all_track_summaries(all_snapshot: AllSessionsSnapshot) -> list[TrackSummary]:
-    """Same as build_track_summaries, but merged across every session.
-
-    One row per (session, track) — sorted by session first, then track ID —
-    so a "Track 1" from one session is never combined with, or mistaken
-    for, a "Track 1" from a different session.
-    """
     summaries = [
         TrackSummary.from_event(event, session_id=session_id)
         for session_id, event in all_snapshot.all_latest_events

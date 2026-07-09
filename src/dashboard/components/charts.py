@@ -9,15 +9,7 @@ from dashboard.models import DashboardEvent, TrackSummary
 
 
 def render_motion_chart(history: Sequence[tuple[str, DashboardEvent]]) -> None:
-    """Motion score over time, one line per excavator.
-
-    Each entry is a (session_id, event) pair rather than a bare event. In
-    the single-session view every event shares the same session_id, so
-    lines are labelled "Track N" exactly as before. In the merged "All
-    sessions" view, more than one session_id shows up here — in that case
-    lines are labelled "session · Track N" so a "Track 1" from one session
-    is never plotted as the same line as a "Track 1" from another.
-    """
+    
     st.subheader("Motion score")
     if not history:
         st.info("Motion history will appear after events arrive.")
@@ -47,13 +39,6 @@ def render_motion_chart(history: Sequence[tuple[str, DashboardEvent]]) -> None:
 
 
 def render_state_distribution_chart(events: Iterable[DashboardEvent]) -> None:
-    """Working vs Idle equipment counts, right now.
-
-    Takes a plain iterable of events (not a track_id-keyed dict): this
-    chart only ever counts states, so it works identically whether it's
-    fed one session's active tracks or every session's combined, with no
-    risk of two sessions' Track 1 colliding on the same key.
-    """
     st.subheader("Working vs Idle")
     events = list(events)
     if not events:
@@ -69,16 +54,10 @@ def render_state_distribution_chart(events: Iterable[DashboardEvent]) -> None:
 
 
 def render_utilization_chart(summaries: list[TrackSummary]) -> None:
-    """Utilization percent per excavator, across the whole session (or
-    every session, when the merged "All sessions" view is selected)."""
     st.subheader("Utilization by excavator")
     if not summaries:
         st.info("Utilization will appear once excavators have been tracked.")
         return
-
-    # Only prefix bars with the session ID when more than one session is
-    # actually present — keeps the normal single-session view looking
-    # exactly as it did before, and only disambiguates when it matters.
     multi_session = len({summary.session_id for summary in summaries}) > 1
     labels = [
         f"{summary.session_id} · Track {summary.track_id}" if multi_session else f"Track {summary.track_id}"

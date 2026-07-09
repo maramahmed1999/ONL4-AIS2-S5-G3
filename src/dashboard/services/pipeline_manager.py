@@ -32,27 +32,6 @@ class _RunningProcess:
 
 
 class PipelineManager:
-    """
-    Owns the lifecycle of the cv_service CV pipeline as a background subprocess.
-
-    Design notes:
-    - The pipeline itself (cv_service/main.py) is never modified in behavior —
-      this class only launches `python cv_service/main.py <source>` and manages
-      the OS process around it.
-    - Only one pipeline run is allowed at a time; start() is a no-op (raises)
-      if one is already running.
-    - Uploaded videos are streamed to disk in chunks (never fully buffered as
-      a second in-memory copy), then cv_service reads them frame-by-frame via
-      its existing cv2.VideoCapture-based CaptureThread — unchanged, so very
-      long recordings are handled the same way regardless of who launches it.
-    - Live camera uses a numeric device index (e.g. "0") passed as the video
-      source argument; OpenCV resolves an all-digit source string to a webcam
-      index on the host running the pipeline process.
-    - Stopping sends SIGINT first (the same signal main.py already handles via
-      `except KeyboardInterrupt`, which flushes Kafka and releases the capture
-      cleanly), only escalating to SIGTERM/SIGKILL if the process doesn't exit
-      in time.
-    """
 
     def __init__(
         self,
@@ -67,21 +46,15 @@ class PipelineManager:
         self._log_path = log_path
         self._uploads_dir.mkdir(parents=True, exist_ok=True)
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
-        # Optional SQLite durability layer — purely additive. When absent
-        # (e.g. in tests), PipelineManager behaves exactly as it did before.
         self._persistence = persistence
 
         self._lock = threading.RLock()
         self._process: _RunningProcess | None = None
         self._last_error: str | None = None
         self._last_return_code: int | None = None
-        # The session ID of the currently-running (or most recently started)
-        # pipeline run, and a lookup of every session's human-readable label
-        # ("Upload: clip.mp4", "Live Camera (device 0)") for the UI picker.
         self._current_session_id: str | None = None
         self._session_labels: dict[str, str] = {}
 
-    # ── Public API ────────────────────────────────────────────────────────
 
     def save_upload(self, uploaded_file, filename: str) -> Path:
         """Streams a Streamlit UploadedFile to disk in chunks and returns its path."""
@@ -119,13 +92,16 @@ class PipelineManager:
                 f"\n\n===== Pipeline start {datetime.now(timezone.utc).isoformat()} — {source_label} =====\n".encode()
             )
 
+            child_env = {**os.environ, "EXCAVATOR_SESSION_ID": session_id}
+
             popen = subprocess.Popen(
                 command,
                 cwd=str(self._src_root),
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 start_new_session=(os.name == "posix"),
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name != "posix" else 0
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name != "posix" else 0,
+                env=child_env,
             )
 
             self._process = _RunningProcess(
@@ -217,12 +193,7 @@ class PipelineManager:
             )
 
     def current_session_id(self) -> str | None:
-        """The session ID of the currently-running (or most recently started) run.
-
-        Used by KafkaDashboardConsumer to stamp every incoming event with the
-        session it belongs to, and by the Live tab to always show the
-        current run's data.
-        """
+        
         with self._lock:
             return self._current_session_id
 
@@ -238,7 +209,7 @@ class PipelineManager:
             lines = log_file.readlines()
         return "".join(lines[-max_lines:])
 
-    # ── Private helpers ──────────────────────────────────────────────────
+    
 
     @staticmethod
     def _interrupt_signal() -> signal.Signals:

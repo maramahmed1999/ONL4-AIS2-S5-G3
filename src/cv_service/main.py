@@ -1,14 +1,7 @@
-"""
-cv_service/main.py
-──────────────────
-Real-time excavator CV pipeline with native playback speed.
-- Capture Thread: reads video at exactly source FPS (no faster).
-- OpenCV Window: smooth native-speed preview.
-"""
-
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 import time
@@ -22,10 +15,11 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import settings
-from cv_service.detector import ExcavatorDetector
+from cv_service.detector import Detection, ExcavatorDetector
 from cv_service.kafka_producer import EventProducer
 from cv_service.motion import OpticalFlowAnalyzer
 from cv_service.state_machine import EquipmentState, EquipmentStateMachine, StateRecord
+from dashboard.persistence import PersistenceRepository
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,8 +32,6 @@ STATE_COLOR_BGR: dict[str, tuple[int, int, int]] = {
     "IDLE": (60, 60, 200),
 }
 
-
-# ── Capture Thread (reads at native FPS, never faster) ───────────────────────
 
 class CaptureThread(threading.Thread):
     def __init__(self, source: str | int, queue_size: int = 30):
@@ -81,8 +73,7 @@ class CaptureThread(threading.Thread):
                 self.queue.put_nowait((self._frame_id, frame, video_time))
             except Full:
                 pass
-            
-            # Sleep to maintain native FPS (e.g., 33ms for 30 FPS)
+        
             next_frame_time += frame_interval
             sleep_time = next_frame_time - time.perf_counter()
             if sleep_time > 0:
@@ -101,9 +92,6 @@ class CaptureThread(threading.Thread):
 
     def is_open(self) -> bool:
         return not self._shutdown.is_set() or not self.queue.empty()
-
-
-# ── Background Workers ───────────────────────────────────────────────────────
 
 class KafkaWorker(threading.Thread):
     def __init__(self, producer: EventProducer, max_queue: int = 2000):
@@ -174,7 +162,79 @@ class PreviewWorker(threading.Thread):
         self.join(timeout=1.0)
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+class ModelPerformanceTracker:
+    def __init__(self, persistence: PersistenceRepository, session_id: str) -> None:
+        self._persistence = persistence
+        self._session_id = session_id
+        self._confidences: list[float] = []
+        self._inference_times_ms: list[float] = []
+        self._frame_count = 0
+        self._window_start = time.perf_counter()
+        self._last_flush = time.perf_counter()
+        self._last_hard_frame_saved = 0.0
+
+        self._hard_frames_dir = settings.resolve_path(settings.hard_frames_dir)
+        self._hard_frames_dir.mkdir(parents=True, exist_ok=True)
+
+    def record_frame(
+        self,
+        detections: list[Detection],
+        inference_ms: float,
+        frame: np.ndarray,
+    ) -> None:
+        self._frame_count += 1
+        self._inference_times_ms.append(inference_ms)
+        for det in detections:
+            self._confidences.append(det.confidence)
+
+        self._maybe_save_hard_frame(detections, frame)
+        self._maybe_flush()
+
+    def _maybe_save_hard_frame(self, detections: list[Detection], frame: np.ndarray) -> None:
+        low_conf = [d for d in detections if d.confidence < settings.hard_frame_conf_threshold]
+        if not low_conf:
+            return
+        now = time.monotonic()
+        if now - self._last_hard_frame_saved < settings.hard_frame_min_interval_seconds:
+            return
+        self._last_hard_frame_saved = now
+
+        worst = min(low_conf, key=lambda d: d.confidence)
+        stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+        filename = f"{stamp}_conf{worst.confidence:.2f}.jpg"
+        try:
+            cv2.imwrite(str(self._hard_frames_dir / filename), frame)
+        except cv2.error:
+            logger.warning("Failed to write hard frame %s", filename)
+
+    def _maybe_flush(self) -> None:
+        elapsed = time.perf_counter() - self._last_flush
+        if elapsed < settings.model_metrics_interval_seconds:
+            return
+
+        avg_confidence = (sum(self._confidences) / len(self._confidences)) if self._confidences else None
+        avg_inference_ms = (
+            sum(self._inference_times_ms) / len(self._inference_times_ms)
+            if self._inference_times_ms else None
+        )
+        fps = self._frame_count / elapsed if elapsed > 0 else None
+
+        try:
+            self._persistence.record_model_metric(
+                session_id=self._session_id,
+                timestamp=datetime.now(tz=timezone.utc),
+                avg_confidence=avg_confidence,
+                fps=fps,
+                inference_time_ms=avg_inference_ms,
+            )
+        except Exception:
+            logger.exception("Failed to persist model performance metrics")
+
+        self._confidences.clear()
+        self._inference_times_ms.clear()
+        self._frame_count = 0
+        self._last_flush = time.perf_counter()
+
 
 def build_event(track_id, state, record, motion_score, bbox, frame_id, video_time):
     return {
@@ -220,8 +280,6 @@ def annotate_frame(frame, detections, state_machine, frame_id, video_time):
     return out
 
 
-# ── Pipeline ──────────────────────────────────────────────────────────────────
-
 def run_pipeline(video_path: str) -> None:
     capture = CaptureThread(video_path, queue_size=30)
     capture.start()
@@ -258,6 +316,10 @@ def run_pipeline(video_path: str) -> None:
     kafka_worker = KafkaWorker(producer, max_queue=2000)
     kafka_worker.start()
 
+    session_id = os.environ.get("EXCAVATOR_SESSION_ID", "unknown")
+    performance_persistence = PersistenceRepository(db_path=settings.resolve_path("runtime/dashboard.sqlite3"))
+    performance_tracker = ModelPerformanceTracker(performance_persistence, session_id)
+
     preview_path = settings.resolve_path(settings.preview_frame_path)
     preview_worker = PreviewWorker(preview_path, settings.preview_jpeg_quality)
     preview_worker.start()
@@ -287,7 +349,10 @@ def run_pipeline(video_path: str) -> None:
 
             det_interval = max(1, settings.detection_every_n_processed_frames)
             if (processed - 1) % det_interval == 0:
+                inference_start = time.perf_counter()
                 last_detections = detector.detect(frame)
+                inference_ms = (time.perf_counter() - inference_start) * 1000.0
+                performance_tracker.record_frame(last_detections, inference_ms, frame)
             detections = last_detections
 
             for det in detections:
@@ -312,7 +377,7 @@ def run_pipeline(video_path: str) -> None:
                     )
                     kafka_worker.send(event)
 
-                # Log motion scores for tuning (first 5 detections or on change)
+        
                 if changed or processed <= 5:
                     logger.info(
                         f"[T{det.track_id}] {state.value} | "
@@ -349,6 +414,7 @@ def run_pipeline(video_path: str) -> None:
         capture.release()
         kafka_worker.stop()
         preview_worker.stop()
+        performance_persistence.close()
         logger.info("Shutdown complete.")
 
 

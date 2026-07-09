@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -14,15 +14,21 @@ CAIRO = ZoneInfo("Africa/Cairo")
 
 @dataclass(frozen=True)
 class MotionSample:
-    """Lightweight stand-in for a DashboardEvent, used only by the motion
-    chart, which reads just these three fields. excavator_events doesn't
-    store bbox (only the summary/live path needs it), so this avoids
-    reconstructing a full DashboardEvent — and avoids a schema change —
-    just to plot a line chart."""
 
     track_id: int
     timestamp: datetime
     motion_score: float
+
+
+@dataclass(frozen=True)
+class ModelMetricSample:
+  
+
+    timestamp: datetime
+    avg_confidence: float | None
+    fps: float | None
+    inference_time_ms: float | None
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -62,6 +68,18 @@ CREATE TABLE IF NOT EXISTS excavator_events (
 
 CREATE INDEX IF NOT EXISTS idx_excavator_events_session_track
     ON excavator_events (session_id, track_id);
+
+CREATE TABLE IF NOT EXISTS model_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    timestamp DATETIME NOT NULL,
+    avg_confidence REAL,
+    fps REAL,
+    inference_time_ms REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_metrics_timestamp
+    ON model_metrics (timestamp);
 """
 
 
@@ -313,6 +331,75 @@ class PersistenceRepository:
         with self._lock:
             row = self._connection.execute("SELECT COUNT(*) FROM excavator_events").fetchone()
         return row[0] if row else 0
+
+    # ── Model performance (powers the System Monitoring tab) ────────────
+
+    def record_model_metric(
+        self,
+        session_id: str,
+        timestamp: datetime,
+        avg_confidence: float | None,
+        fps: float | None,
+        inference_time_ms: float | None,
+    ) -> None:
+        """Append one rolled-up YOLO performance sample. Called periodically
+        by cv_service (not per-frame) — see settings.model_metrics_interval_seconds."""
+        with self._lock:
+            self._connection.execute(
+                """
+                INSERT INTO model_metrics (
+                    session_id, timestamp, avg_confidence, fps, inference_time_ms
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (session_id, _iso(timestamp), avg_confidence, fps, inference_time_ms),
+            )
+            self._connection.commit()
+
+    def latest_model_metric(self) -> ModelMetricSample | None:
+        """Most recent performance sample across every session — backs the
+        live KPI cards at the top of the System Monitoring tab."""
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT timestamp, avg_confidence, fps, inference_time_ms
+                FROM model_metrics
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        if row is None:
+            return None
+        ts, avg_conf, fps, inference_ms = row
+        return ModelMetricSample(
+            timestamp=datetime.fromisoformat(ts),
+            avg_confidence=avg_conf,
+            fps=fps,
+            inference_time_ms=inference_ms,
+        )
+
+    def fetch_model_metrics_since(self, hours: float) -> list[ModelMetricSample]:
+        """Every performance sample in the last `hours`, chronological —
+        backs the confidence-trend chart (default window: last 24 hours)."""
+        cutoff = _iso(datetime.now(timezone.utc) - timedelta(hours=hours))
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT timestamp, avg_confidence, fps, inference_time_ms
+                FROM model_metrics
+                WHERE timestamp >= ?
+                ORDER BY timestamp ASC
+                """,
+                (cutoff,),
+            ).fetchall()
+        return [
+            ModelMetricSample(
+                timestamp=datetime.fromisoformat(ts),
+                avg_confidence=avg_conf,
+                fps=fps,
+                inference_time_ms=inference_ms,
+            )
+            for ts, avg_conf, fps, inference_ms in rows
+        ]
 
     def close(self) -> None:
         with self._lock:

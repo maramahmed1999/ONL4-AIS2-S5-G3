@@ -27,7 +27,6 @@ class ConsumerSnapshot:
 
 
 class KafkaDashboardConsumer:
-    """Consumes Kafka telemetry in one daemon thread and updates an EventStore."""
 
     def __init__(
         self,
@@ -42,14 +41,7 @@ class KafkaDashboardConsumer:
         self._bootstrap_servers = bootstrap_servers
         self._topic = topic
         self._group_id = group_id
-        # Asked once per incoming message: "what session/run is currently
-        # active?" This is how each event gets tagged with the upload/live
-        # run it belongs to, without cv_service or the Kafka schema ever
-        # needing to know sessions exist. Defaults to "no session" so this
-        # class still works standalone (e.g. in tests) without a provider.
         self._session_id_provider = session_id_provider or (lambda: None)
-        # Optional SQLite durability layer — purely additive. When absent
-        # (e.g. in tests), the consumer behaves exactly as it did before.
         self._persistence = persistence
         self._shutdown = threading.Event()
         self._status_lock = threading.RLock()
@@ -135,11 +127,6 @@ class KafkaDashboardConsumer:
             return
 
         received_at = datetime.now(timezone.utc)
-        # Read the current session once and reuse it for both writes below,
-        # so the in-memory store and the SQLite log can never disagree
-        # about which session this event belongs to (the provider's answer
-        # could otherwise change between two separate reads if a run
-        # stops/starts mid-message).
         session_id = self._session_id_provider()
         self._store.append(
             event,

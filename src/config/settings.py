@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     kafka_topic: str = "excavator_events"
     kafka_consumer_group_id: str = "dashboard-consumer-group"
 
+    # Model performance monitoring (System Monitoring tab)
+    model_metrics_interval_seconds: float = 5.0        # how often cv_service rolls up + persists a metrics sample
+    hard_frames_dir: str = "runtime/hard_frames"        # where low-confidence frames are saved for later review
+    hard_frame_conf_threshold: float = 0.5              # per-detection confidence below this is saved as a "hard frame"
+    hard_frame_min_interval_seconds: float = 2.0        # throttle: don't save more than one hard frame this often
+    low_confidence_alert_percent: float = 60.0          # System Monitoring warning threshold (avg confidence)
+    no_detections_alert_minutes: float = 10.0           # System Monitoring warning threshold (detection silence)
+
     model_config = {
         "env_file": str(SRC_ROOT / ".env"),
         "env_file_encoding": "utf-8",

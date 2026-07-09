@@ -73,7 +73,7 @@ class ExcavatorDetector:
                 continue
             for box in r.boxes:
                 if box.id is None:
-                    # ByteTrack hasn't assigned an ID yet (e.g., first frame)
+                    # ByteTrack hasn't assigned an ID yet
                     continue
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
 

@@ -90,9 +90,6 @@ def _handle_start(
 
 
 def render_status_panel(status: PipelineStatus) -> None:
-    """Live status badge + collapsible log tail. Meant to run inside an
-    auto-refreshing fragment so it reflects the pipeline finishing/crashing
-    even without user interaction."""
     st.subheader("Pipeline Status")
 
     if status.running:

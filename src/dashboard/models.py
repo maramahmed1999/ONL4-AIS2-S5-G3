@@ -36,14 +36,6 @@ class DashboardEvent(BaseModel):
 
 
 class TrackSummary(BaseModel):
-    """One row of the per-excavator summary table / Excel export.
-
-    Total observed time and utilization are derived directly from the
-    state machine's own bookkeeping (working_seconds + idle_seconds), which
-    is the single source of truth already published by the CV pipeline —
-    this avoids maintaining a second, potentially-drifting clock in the
-    dashboard.
-    """
 
     model_config = ConfigDict(frozen=True)
 

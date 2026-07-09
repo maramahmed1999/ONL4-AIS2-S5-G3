@@ -15,9 +15,8 @@ class EquipmentState(str, Enum):
 
 @dataclass
 class StateRecord:
-    """Full runtime state for a single tracked excavator."""
 
-    # Current state
+   
     state: EquipmentState = EquipmentState.IDLE
 
     # Time accounting (seconds spent in each state)
@@ -34,23 +33,6 @@ class StateRecord:
 
 
 class EquipmentStateMachine:
-    """
-    Manages state transitions for multiple concurrent excavator tracks.
-
-    State model:
-    - WORKING: arm/bucket optical flow or machine centroid displacement is active
-      for N consecutive frames.
-    - IDLE: neither activity signal is active for N consecutive frames.
-
-    Key design decisions:
-    - Debouncing: a state change requires N *consecutive* frames with the same signal.
-      This prevents single-frame noise (vibration, lighting flicker) from causing flips.
-    - Time accounting: time elapsed since last update is attributed to the PREVIOUS state
-      (the state the equipment was in during that interval).
-    - Centroid displacement: computed from the YOLO/ByteTrack bbox center across frames.
-      Large displacement is treated as working activity alongside arm/bucket motion.
-    - Stale tracks: tracks not updated for `stale_timeout` seconds are purged automatically.
-    """
 
     def __init__(
         self,
@@ -65,7 +47,6 @@ class EquipmentStateMachine:
         self._records: dict[int, StateRecord] = {}
         self._prev_centroids: dict[int, tuple[float, float]] = {}
 
-    # ── Public API ────────────────────────────────────────────────────────────
 
     def set_move_threshold(self, move_threshold_pixels: float) -> None:
         self._move_threshold = move_threshold_pixels
@@ -114,12 +95,7 @@ class EquipmentStateMachine:
         return dict(self._records)
 
     def purge_stale_tracks(self) -> list[int]:
-        """
-        Remove tracks that haven't been seen for `stale_timeout` seconds.
-        Call this periodically (e.g., every N frames) from the main loop.
-
-        Returns list of purged track IDs for logging.
-        """
+        
         now = time.monotonic()
         stale_ids = [
             tid
@@ -132,8 +108,6 @@ class EquipmentStateMachine:
             logger.info(f"Purged stale track: {tid}")
 
         return stale_ids
-
-    # ── Private helpers ───────────────────────────────────────────────────────
 
     def _get_or_create(self, track_id: int) -> StateRecord:
         if track_id not in self._records:

@@ -30,11 +30,7 @@ def render_transition_table(transitions: tuple[DashboardEvent, ...]) -> None:
 
 
 def render_summary_table(summaries: list[TrackSummary]) -> None:
-    """One row per excavator: Track ID, Working Time, Idle Time, Utilization.
-
-    Sourced from the same data used by the Excel export, so what's on screen
-    always matches what gets downloaded.
-    """
+    
     st.subheader("Excavator Summary")
     if not summaries:
         st.info("Summary will appear once excavators have been tracked.")

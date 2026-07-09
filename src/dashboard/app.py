@@ -19,6 +19,12 @@ from dashboard.components.controls import render_source_and_actions, render_stat
 from dashboard.components.export import render_download_button
 from dashboard.components.overview import render_metric_cards
 from dashboard.components.status import render_connection_status
+from dashboard.components.system_monitoring import (
+    render_alerts,
+    render_confidence_trend_chart,
+    render_hard_frames_note,
+    render_kpi_cards,
+)
 from dashboard.components.tables import render_equipment_table, render_summary_table
 from dashboard.components.video import render_live_preview
 from dashboard.consumer import KafkaDashboardConsumer
@@ -30,6 +36,8 @@ from dashboard.store import EventStore
 LIVE_REFRESH_SECONDS = 0.5
 ANALYTICS_REFRESH_SECONDS = 1.5
 STATUS_REFRESH_SECONDS = 1.0
+SYSTEM_MONITORING_REFRESH_SECONDS = 5.0
+SYSTEM_MONITORING_CHART_WINDOW_HOURS = 24.0
 OFFLINE_AFTER_SECONDS = 5.0
 
 st.set_page_config(
@@ -69,18 +77,12 @@ def get_dashboard_runtime(
         bootstrap_servers=settings.kafka_bootstrap_servers,
         topic=settings.kafka_topic,
         group_id=settings.kafka_consumer_group_id,
-        # Every event gets tagged with whatever session is currently
-        # running, so it's never merged with a different upload/stream.
         session_id_provider=_pipeline_manager.current_session_id,
         persistence=_persistence,
     )
     consumer.start()
     return store, consumer
 
-
-# pipeline_manager has to exist before get_dashboard_runtime() is called,
-# since the consumer needs pipeline_manager.current_session_id as its
-# session provider.
 persistence = get_persistence_repository()
 pipeline_manager = get_pipeline_manager(persistence)
 store, consumer = get_dashboard_runtime(pipeline_manager, persistence)
@@ -103,13 +105,11 @@ with st.sidebar:
     render_sidebar_status()
 
 
-live_tab, analytics_tab = st.tabs(["🎥 Live Monitor", "📊 Analytics"])
+live_tab, analytics_tab, system_tab = st.tabs(["🎥 Live Monitor", "📊 Analytics", "🩺 System Monitoring"])
 
 with live_tab:
     @st.fragment(run_every=LIVE_REFRESH_SECONDS)
     def render_live_tab() -> None:
-        # Live tab always tracks whatever session is currently running,
-        # regardless of what's selected in the Analytics tab picker below.
         snapshot = store.snapshot(pipeline_manager.current_session_id())
         consumer_status = consumer.snapshot()
         metrics = calculate_metrics(snapshot)
@@ -132,11 +132,6 @@ with live_tab:
 with analytics_tab:
     @st.fragment(run_every=ANALYTICS_REFRESH_SECONDS)
     def render_analytics_tab() -> None:
-        # Sourced from SQLite (via `persistence`), not the in-memory `store` —
-        # the in-memory store starts empty every time the Streamlit process
-        # restarts, which is why this tab used to go blank locally even
-        # though the database still had everything. SQLite survives a
-        # restart, so this tab now does too.
         session_ids = persistence.list_sessions()
         current_session_id = pipeline_manager.current_session_id()
 
@@ -144,14 +139,9 @@ with analytics_tab:
             st.info("No sessions yet — upload a video or start a live camera to see analytics here.")
             return
 
-        # "All" is a synthetic option prepended to the real session IDs —
-        # picking it merges every session's tracking into one combined view.
         ALL_SESSIONS_OPTION = "__all__"
         options = [ALL_SESSIONS_OPTION, *session_ids]
 
-        # Preserve whatever the user manually picked across refreshes;
-        # only fall back to the current/most-recent session the first time,
-        # or if their pick is no longer valid.
         state_key = "analytics_selected_session_id"
         if st.session_state.get(state_key) not in options:
             st.session_state[state_key] = current_session_id if current_session_id in session_ids else session_ids[-1]
@@ -159,10 +149,6 @@ with analytics_tab:
         def _session_option_label(sid: str) -> str:
             if sid == ALL_SESSIONS_OPTION:
                 return "All sessions"
-            # Prefer the durable label from SQLite; fall back to
-            # PipelineManager's in-memory one for a session started in this
-            # same process before persistence.session_label existed, or the
-            # raw ID as a last resort.
             return persistence.session_label(sid) or pipeline_manager.session_label(sid) or sid
 
         selected_session_id = st.selectbox(
@@ -191,8 +177,7 @@ with analytics_tab:
 
         chart_column_left, chart_column_right = st.columns(2)
         with chart_column_left:
-            # TrackSummary has a `.state` field, same as the DashboardEvents
-            # this chart used to receive — works unchanged.
+        
             render_state_distribution_chart(summaries)
         with chart_column_right:
             render_utilization_chart(summaries)
@@ -205,3 +190,42 @@ with analytics_tab:
         )
 
     render_analytics_tab()
+
+with system_tab:
+    st.caption(
+        "Live YOLO26n model performance, sampled every "
+        f"{settings.model_metrics_interval_seconds:.0f}s while detection is running."
+    )
+
+    @st.fragment(run_every=SYSTEM_MONITORING_REFRESH_SECONDS)
+    def render_system_kpis_and_alerts() -> None:
+        latest_metric = persistence.latest_model_metric()
+
+        render_alerts(
+            latest_metric,
+            low_confidence_threshold=settings.low_confidence_alert_percent,
+            no_detections_minutes=settings.no_detections_alert_minutes,
+        )
+        render_kpi_cards(latest_metric)
+
+        if latest_metric is None:
+            st.info(
+                "No model performance samples yet — start detection from the sidebar "
+                "to see live YOLO26n metrics here."
+            )
+
+    render_system_kpis_and_alerts()
+
+    st.divider()
+    
+    @st.fragment(run_every=60.0)
+    def render_system_charts() -> None:
+        samples = persistence.fetch_model_metrics_since(SYSTEM_MONITORING_CHART_WINDOW_HOURS)
+        render_confidence_trend_chart(samples)
+
+        render_hard_frames_note(
+            settings.resolve_path(settings.hard_frames_dir),
+            settings.hard_frame_conf_threshold,
+        )
+
+    render_system_charts()

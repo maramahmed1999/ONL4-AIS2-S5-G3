@@ -9,9 +9,6 @@ _STALE_AFTER_SECONDS = 5.0
 
 
 def render_live_preview(preview_path: Path, pipeline_running: bool) -> None:
-    """Displays the latest annotated frame written by the CV pipeline's
-    PreviewWorker. This polls a JPEG file rather than opening any GUI window,
-    since the pipeline runs headless as a background subprocess."""
     st.subheader("Live Processed Video")
 
     if not preview_path.exists():

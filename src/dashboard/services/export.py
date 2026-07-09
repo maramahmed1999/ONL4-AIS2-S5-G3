@@ -22,8 +22,7 @@ _COLUMNS = [
 
 
 def build_summary_dataframe(summaries: list[TrackSummary]) -> pd.DataFrame:
-    """Same rows/columns used by the live summary table and the Excel export,
-    so the download always matches what's on screen."""
+    
     rows = [
         {
             "Session ID": summary.session_id,
@@ -42,7 +41,7 @@ def build_summary_dataframe(summaries: list[TrackSummary]) -> pd.DataFrame:
 
 
 def build_summary_workbook(summaries: list[TrackSummary]) -> bytes:
-    """Render the excavator summary as an .xlsx file and return its bytes."""
+   
     dataframe = build_summary_dataframe(summaries)
 
     buffer = BytesIO()
